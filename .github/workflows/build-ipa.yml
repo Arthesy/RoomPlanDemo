@@ -1,0 +1,61 @@
+name: Build unsigned IPA
+
+# 通用版：适用于普通 .xcodeproj / .xcworkspace 工程（如 RoomPlanDemo）。
+# 自动探测工程文件与 scheme，编译出未签名 .app 并打成 IPA。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Build, package and upload
+        run: |
+          set -euo pipefail
+
+          if ls -d *.xcworkspace >/dev/null 2>&1; then
+            TARGET=(-workspace "$(ls -d *.xcworkspace | head -n 1)")
+          else
+            TARGET=(-project "$(ls -d *.xcodeproj | head -n 1)")
+          fi
+          echo "工程：${TARGET[*]}"
+
+          SCHEME=$(xcodebuild "${TARGET[@]}" -list -json \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('workspace') or d.get('project'))['schemes'][0])")
+          echo "Scheme：$SCHEME"
+
+          xcodebuild "${TARGET[@]}" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP" || { echo "没有找到 .app，编译失败"; exit 1; }
+
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry "$SCHEME-unsigned.ipa" Payload
+          ls -lh "$SCHEME-unsigned.ipa"
+          echo "IPA_NAME=$SCHEME-unsigned.ipa" >> "$GITHUB_ENV"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: '*-unsigned.ipa'
+          if-no-files-found: error
